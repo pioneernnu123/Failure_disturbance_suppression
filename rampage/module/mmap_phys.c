@@ -1,0 +1,136 @@
+
+#include <linux/init.h>
+#include <linux/kernel.h>       
+#include <linux/fs.h>
+#include <linux/cdev.h>
+#include <linux/mm.h>  
+#include <linux/io.h>  
+#include <linux/errno.h>	
+#include <asm/pgtable.h>
+#include <linux/semaphore.h>
+
+#include "phys_mem.h"           
+#include "mmap_phys.h"           
+#include "phys_mem_int.h"           
+
+#define ROUND_UP_TO(x, y)       (((x) + (y) - 1) / (y) * (y))
+#define ROUND_UP_TO_PAGE(x)     ROUND_UP_TO((x), PAGE_SIZE)
+
+void phys_mem_vma_open(struct vm_area_struct *vma)
+{
+	struct phys_mem_session *session =
+			(struct phys_mem_session *) vma->vm_private_data;
+
+	down(&session->sem);
+	if (0 == session->vmas)
+		SET_STATE(session, SESSION_STATE_MAPPED);
+
+	session->vmas++;
+	up(&session->sem);
+}
+
+void phys_mem_vma_close(struct vm_area_struct *vma)
+{
+	struct phys_mem_session *session =
+			(struct phys_mem_session *) vma->vm_private_data;
+
+	down(&session->sem);
+	session->vmas--;
+
+	if (0 == session->vmas)
+		SET_STATE(session, SESSION_STATE_CONFIGURED);
+
+	up(&session->sem);
+}
+
+struct vm_operations_struct phys_mem_vm_ops = {
+	.open	=	phys_mem_vma_open,
+	.close	=	phys_mem_vma_close,
+};
+
+int assemble_vma (struct phys_mem_session *session, struct vm_area_struct *vma)
+{
+	unsigned long request_iterator;
+	int insert_status = 0;
+
+	for (request_iterator = 0;
+	     request_iterator < session->num_frame_stati; request_iterator++) {
+		struct phys_mem_frame_status *frame_status =
+					&session->frame_stati[request_iterator];
+
+		if ( frame_status->page) {
+#if 0
+			split_page(frame_status->page, 0);
+			insert_status = vm_insert_page(vma, vma->vm_start +
+					frame_status->vma_offset_of_first_byte,
+					frame_status->page);
+#endif
+			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+			insert_status = remap_pfn_range(vma, vma->vm_start +
+					frame_status->vma_offset_of_first_byte,
+					page_to_pfn(frame_status->page),
+					PAGE_SIZE, vma->vm_page_prot);
+
+			if (unlikely(insert_status)) {
+
+				pr_warn("Could not insert page %p into VMA! Reason: %d",
+					frame_status->page, insert_status);
+				frame_status->actual_source |=
+						SOURCE_ERROR_NOT_MAPPABLE;
+				goto out;
+			}
+		}
+	}
+
+out:
+	return insert_status;
+}
+
+int file_mmap_configured(struct file * filp, struct vm_area_struct * vma)
+{
+	struct phys_mem_session *session =
+			(struct phys_mem_session *) filp->private_data;
+	int ret = 0;
+	unsigned long max_size;
+
+	if (down_interruptible (&session->sem))
+		return -ERESTARTSYS;
+
+	if ((GET_STATE(session) != SESSION_STATE_CONFIGURED)
+	    && (GET_STATE(session) != SESSION_STATE_MAPPED)) {
+		ret = -EIO;
+		pr_notice("The session cannot be mmaped in state %i",
+			  GET_STATE(session));
+		goto err;
+	}
+
+	max_size = ROUND_UP_TO_PAGE(
+			SESSION_FRAME_STATI_SIZE(session->num_frame_stati));
+	max_size <<= PAGE_SHIFT;
+
+	if ( vma->vm_end - vma->vm_start > max_size) {
+		ret = -EINVAL;
+		pr_notice("Mmap too large:  %lx > %lx",
+			   vma->vm_end - vma->vm_start, max_size );
+		goto err;
+	}
+
+	ret = assemble_vma(session, vma);
+	if (ret)
+		goto err;
+
+	vma->vm_ops = &phys_mem_vm_ops;
+
+	// LZU DSLAB CHANGE
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	vm_flags_set(vma, VM_IO);
+
+	vma->vm_private_data = session;
+
+	up(&session->sem);
+	phys_mem_vma_open(vma);
+	return ret;
+err:
+	up(&session->sem);
+	return ret;
+}

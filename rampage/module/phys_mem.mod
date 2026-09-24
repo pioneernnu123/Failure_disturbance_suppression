@@ -1,0 +1,10 @@
+/root/rampage/module/main.o
+/root/rampage/module/file_operations.o
+/root/rampage/module/mmap_phys.o
+/root/rampage/module/page_claiming/page_claiming.o
+/root/rampage/module/page_claiming/free_page_claiming.o
+/root/rampage/module/page_claiming/free_buddy_page_claiming.o
+/root/rampage/module/page_claiming/page_cache_claiming.o
+/root/rampage/module/page_claiming/anon_page_claiming.o
+/root/rampage/module/page_claiming/helper.o
+/root/rampage/module/page_claiming/difficult_pages.o

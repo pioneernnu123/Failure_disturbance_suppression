@@ -1,0 +1,1 @@
+savedcmd_/root/rampage/module/phys_mem.ko := ld -r -melf64lriscv -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T scripts/module.lds -o /root/rampage/module/phys_mem.ko /root/rampage/module/phys_mem.o /root/rampage/module/phys_mem.mod.o;  make -f ./arch/riscv/Makefile.postlink /root/rampage/module/phys_mem.ko
